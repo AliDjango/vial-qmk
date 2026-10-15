@@ -4,6 +4,7 @@
 // #include "lib/bongocat.c"
 #include "lib/logo.c"
 #include "transactions.h"
+#include "usb_recovery.h"
 
 enum layer_number {
   _PROGDVORAK = 0,
@@ -62,6 +63,8 @@ typedef struct {
 // Global variable, initialized to all zeros
 system_status_t g_system_status = {0};
 static uint32_t last_hid_sync = 0;
+static uint32_t last_status_sync = 0;
+static bool status_sync_pending = false;
 
 //FOR SLAVE-MASTER COMMS
 typedef struct {
@@ -76,12 +79,21 @@ static uint32_t slave_oled_last_page_update = 0;
 #define MAX_PACKET_SIZE 32
 #define CHUNK_SIZE 30  // 32 - 2 bytes (type + index)
 #define PAYLOAD_TIMEOUT 2000  // ms
+#define MAX_LARGE_PAYLOAD_SIZE (CHUNK_SIZE * 256U) // Packet indices are one byte.
 
 static uint8_t *dynamic_payload_buffer = NULL;
 static uint16_t total_payload_size = 0;
 static uint16_t total_packets = 0;
 static uint16_t expected_packet_index = 0;
 static uint32_t last_packet_time = 0;
+
+static void reset_payload_transfer(void) {
+    free(dynamic_payload_buffer);
+    dynamic_payload_buffer = NULL;
+    total_payload_size = 0;
+    total_packets = 0;
+    expected_packet_index = 0;
+}
 
 //extern uint8_t __StackLimit;
 //extern uint8_t __bss_end__;
@@ -254,10 +266,21 @@ oled_rotation_t oled_init_user(oled_rotation_t rotation) {
 }
 
 void housekeeping_task_user(void) {
+    lily58lp_usb_recovery_task();
+    if (dynamic_payload_buffer && timer_elapsed32(last_packet_time) > PAYLOAD_TIMEOUT) {
+        reset_payload_transfer();
+    }
     if (is_keyboard_master()) {
-        if (timer_elapsed32(last_hid_sync) > 60000) { // send every 1/2 minute
-                g_system_status.is_hid_driver_connected = false;
-                transaction_rpc_send(USER_SYNC_SYSTEM_STATUS, sizeof(g_system_status), &g_system_status);
+        if (g_system_status.is_hid_driver_connected && timer_elapsed32(last_hid_sync) > 60000) {
+            g_system_status.is_hid_driver_connected = false;
+            status_sync_pending = true;
+        }
+        // Coalesce host updates and limit split RPC attempts, including retries.
+        if (status_sync_pending && timer_elapsed32(last_status_sync) >= 100) {
+            last_status_sync = timer_read32();
+            if (transaction_rpc_send(USER_SYNC_SYSTEM_STATUS, sizeof(g_system_status), &g_system_status)) {
+                status_sync_pending = false;
+            }
         }
     }
 }
@@ -631,11 +654,11 @@ void handle_normal_packet(uint8_t *data, uint8_t length) {
     if (length < 2) return; // must be at least type + 1 payload byte
 
     // Normal Vial / legacy packets
-    if (memcmp(&data[1], "QWERTY", 6) == 0) {
+    if (length >= 7 && memcmp(&data[1], "QWERTY", 6) == 0) {
         set_single_default_layer(_QWERTY);
-    } else if (memcmp(&data[1], "DVORAK", 6) == 0) {
+    } else if (length >= 7 && memcmp(&data[1], "DVORAK", 6) == 0) {
         set_single_default_layer(_PROGDVORAK);
-    } else if (length >= 13) {
+    } else if (length >= 17) {
         // Example: system status (offset by 1 for packet_type)
         g_system_status.cpu_temp     = data[1];
         g_system_status.cpu_percent  = data[2];
@@ -648,10 +671,11 @@ void handle_normal_packet(uint8_t *data, uint8_t length) {
         g_system_status.room_temp_1  = (uint16_t)data[13] | ((uint16_t)data[14] << 8);
         g_system_status.room_temp_2  = (uint16_t)data[15] | ((uint16_t)data[16] << 8);
         g_system_status.is_hid_driver_connected = true;
-        transaction_rpc_send(USER_SYNC_SYSTEM_STATUS, sizeof(g_system_status), &g_system_status);
+        last_hid_sync = timer_read32();
+        status_sync_pending = true;
     }
 }
-void process_large_payload(uint8_t *data, uint8_t length){
+void process_large_payload(uint8_t *data, uint16_t length){
 
 }
 
@@ -661,7 +685,6 @@ void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
 
     uint8_t packet_type = data[0];
     uint32_t now = timer_read32();
-    last_hid_sync = now;
 
     // oled_set_cursor(0,4);
     // char buf[33];
@@ -671,56 +694,60 @@ void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
     // g_system_status.vram_usage = data[0];
 
     // Check for timeout
-    if (expected_packet_index > 0 && now - last_packet_time > PAYLOAD_TIMEOUT) {
+    if (dynamic_payload_buffer && now - last_packet_time > PAYLOAD_TIMEOUT) {
         // Timeout reached, reset transfer
-        if (dynamic_payload_buffer) {
-            free(dynamic_payload_buffer);
-            dynamic_payload_buffer = NULL;
-        }
-        total_payload_size = 0;
-        total_packets = 0;
-        expected_packet_index = 0;
+        reset_payload_transfer();
     }
 
     if (packet_type == 0x86 && length >= 3) {
         // Payload size packet
+        reset_payload_transfer();
         total_payload_size = data[1] | (data[2] << 8);
+        if (total_payload_size == 0 || total_payload_size > MAX_LARGE_PAYLOAD_SIZE) {
+            reset_payload_transfer();
+            return;
+        }
         total_packets = (total_payload_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
-        if (dynamic_payload_buffer) free(dynamic_payload_buffer);
         dynamic_payload_buffer = malloc(total_payload_size);
+        if (!dynamic_payload_buffer) {
+            reset_payload_transfer();
+            return;
+        }
         expected_packet_index = 0;
         last_packet_time = now;
 
         // Send ACK for size packet
-        uint8_t ack[2] = {0x81, 0xFF};
-        host_raw_hid_send(ack, 2);
+        // VIA sends this response buffer after the callback returns.
+        memset(data, 0, length);
+        data[0] = 0x81;
+        data[1] = 0xFF;
 
     } else if (packet_type == 0x87) {
         uint8_t packet_index = data[1];
 
         // Only accept the packet we are expecting
-        if (packet_index != expected_packet_index) return;
+        if (!dynamic_payload_buffer || expected_packet_index >= total_packets || packet_index != expected_packet_index) return;
 
         uint16_t offset = packet_index * CHUNK_SIZE;
+        if (offset >= total_payload_size) return;
         uint8_t chunk_size = (total_payload_size - offset > CHUNK_SIZE) ? CHUNK_SIZE : total_payload_size - offset;
+        if (length - 2 < chunk_size) return;
 
         memcpy(&dynamic_payload_buffer[offset], &data[2], chunk_size);
         expected_packet_index++;
         last_packet_time = now;
 
         // Send ACK
-        uint8_t ack[2] = {0x82, packet_index};
-        host_raw_hid_send(ack, 2);
+        memset(data, 0, length);
+        data[0] = 0x82;
+        data[1] = packet_index;
 
         if (expected_packet_index >= total_packets) {
             // Full payload received
             process_large_payload(dynamic_payload_buffer, total_payload_size);
 
-            free(dynamic_payload_buffer);
-            dynamic_payload_buffer = NULL;
-            total_payload_size = 0;
-            expected_packet_index = 0;
+            reset_payload_transfer();
         }
 
     } else if (packet_type == 0x85) {

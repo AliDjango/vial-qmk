@@ -1,5 +1,6 @@
 VIA_ENABLE = yes
 VIAL_ENABLE = yes
+SRC += usb_recovery.c
 WPM_ENABLE = yes
 LTO_ENABLE = yes            # Link Time Optimization enabled
 BOOTMAGIC_ENABLE = no       # Enable Bootmagic Lite
@@ -18,7 +19,10 @@ OPENRGB_ENABLE = yes
 VIALRGB_ENABLE = yes
 RGB_MATRIX_ENABLE = yes
 SPLIT_TRANSPORT = serial  # or i2c, depending on your hardware
-# NO_USB_STARTUP_CHECK = yes
+# Keep ChibiOS suspend handling; USB recovery also runs from its suspend hook.
+NO_USB_STARTUP_CHECK = no
+# Let initialization finish even when the hub has not enumerated the device.
+USB_WAIT_FOR_ENUMERATION = no
 
 # RAW_ENABLE = yes #NEVER ENABLE IN VIAL
 Link_Time_Optimization = yes # Reduce size of firmware by optimizing at link time

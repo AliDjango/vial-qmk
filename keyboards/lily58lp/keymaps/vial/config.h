@@ -68,7 +68,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define SPLIT_ACTIVITY_ENABLE
 #define RGB_MATRIX_TIMEOUT 300000
 #define OLED_TIMEOUT 300000
-#define RGB_DISABLE_WHEN_USB_SUSPENDED 1
+#define RGB_MATRIX_SLEEP
 #define DYNAMIC_KEYMAP_LAYER_COUNT 6
 
 
@@ -111,7 +111,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define LEFTCAT
 #define SPLIT_TRANSACTION_IDS_USER USER_SYNC_SYSTEM_STATUS
 
-#define NO_USB_SUSPEND
 #define RGB_MATRIX_STARTUP_MODE RGB_MATRIX_NONE
 // #define SPLIT_USB_TIMEOUT 2000
 // #define SPLIT_MAX_CONNECTION_ERRORS 5

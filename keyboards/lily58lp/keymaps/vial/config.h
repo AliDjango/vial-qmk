@@ -34,6 +34,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define EE_HANDS
 #define MATRIX_ROWS 10
 
+// Retry USB role detection if the laptop starts its USB controller after us.
+// Both halves need this enabled so the watchdog handshake matches.
+#define SPLIT_WATCHDOG_ENABLE
+#define SPLIT_WATCHDOG_TIMEOUT 5000
+
 #define NKRO_DEFAULT_ON true
 
 #define QUICK_TAP_TERM 0

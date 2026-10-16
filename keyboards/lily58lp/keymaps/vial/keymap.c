@@ -248,23 +248,6 @@ layer_state_t layer_state_set_user(layer_state_t state) {
   return update_tri_layer_state(state, _LOWER, _RAISE, _ADJUST);
 }
 
-//SSD1306 OLED update loop, make sure to enable OLED_ENABLE=yes in rules.mk
-#ifdef OLED_ENABLE
-static uint32_t splash_start_time;
-static bool     splash_done = false;
-
-
-oled_rotation_t oled_init_user(oled_rotation_t rotation) {
-  splash_start_time = timer_read32();
-  splash_done       = false;
-  if (is_keyboard_master()){
-    return OLED_ROTATION_270;  // flips the display 180 degrees if offhand
-    } else {
-    return OLED_ROTATION_270;
-    }
-  return rotation;
-}
-
 void housekeeping_task_user(void) {
     lily58lp_usb_recovery_task();
     if (dynamic_payload_buffer && timer_elapsed32(last_packet_time) > PAYLOAD_TIMEOUT) {
@@ -283,6 +266,23 @@ void housekeeping_task_user(void) {
             }
         }
     }
+}
+
+//SSD1306 OLED update loop, make sure to enable OLED_ENABLE=yes in rules.mk
+#ifdef OLED_ENABLE
+static uint32_t splash_start_time;
+static bool     splash_done = false;
+
+
+oled_rotation_t oled_init_user(oled_rotation_t rotation) {
+  splash_start_time = timer_read32();
+  splash_done       = false;
+  if (is_keyboard_master()){
+    return OLED_ROTATION_270;  // flips the display 180 degrees if offhand
+    } else {
+    return OLED_ROTATION_270;
+    }
+  return rotation;
 }
 
 
